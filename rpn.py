@@ -18,8 +18,8 @@ class Anchors:
         anchor_size = [128, 256, 512]
         stride = 16
         anchors = []
-        for r in range(0, img.shape[0], stride):
-            for c in range(0, img.shape[1], stride):
+        for r in range(0, image_size[0], stride):
+            for c in range(0, image_size[1], stride):
                 for ratio in anchor_ratio:
                     r_ratio = ratio[0]
                     c_ratio = ratio[1]
@@ -81,7 +81,47 @@ class Anchors:
         return foreground_anchors, background_anchors
 
 
+def rpn_generator():
+
+    img_size = [600, 800, 3]
+    shaper = ShapeDataset()
+    anchors = Anchors(img_size)
+
+    k = 256
+    feature_y = np.round(600/16)
+    feature_x = np.round(800 / 16)
+    rpn_objectness = np.zeros([feature_y, feature_x, 2*k])
+
+    rpn_bbox = np.zeros([feature_y, feature_x, 4*k])
+    while True:
+        img, rects = shaper.generate_image([600, 800], 15)
+
+        fg_list = []
+        bg_list = []
+
+        for rect in rects:
+            fa, ba = anchors.rectangle_anchor_match(rect[1])
+            fg_list.append(fa)
+            fg_list.append(ba)
+
+        fg_list_256 = np.random.choice(fg_list, 256)
+        bg_list_256= np.random.choice(bg_list, 256)
+
+        print('fg_list:', len(fg_list_256))
+        print('bg_list:', len(bg_list_256))
+
+        break
+
+
+
+
+
+
 if __name__ == '__main__':
+
+    rpn_generator()
+    exit(0)
+
     shapers = ShapeDataset()
 
     img, shape_rect = shapers.generate_image([600, 800], 10)
@@ -94,5 +134,6 @@ if __name__ == '__main__':
         print(len(fa), len(ba))
 
         if len(fa) == 0:
+            print('rect:', rect)
             cv.imwrite('img.png', img)
         # print(fa)
