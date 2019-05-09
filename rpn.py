@@ -11,6 +11,8 @@ class Anchors:
     def get_anchor_rect(self, image_size):
         """
         Total anchors will be produced for 600 x 800 image is 38*50*9 = 17100
+        Anchors are like [y, x, h, w, y_pos, x_pos, anchortype]
+        x_pos, y_pos - the position at the feature
         :param image_size:
         :return:
         """
@@ -20,6 +22,7 @@ class Anchors:
         anchors = []
         for r in range(0, image_size[0], stride):
             for c in range(0, image_size[1], stride):
+                anchor_cnt = 0
                 for ratio in anchor_ratio:
                     r_ratio = ratio[0]
                     c_ratio = ratio[1]
@@ -40,7 +43,8 @@ class Anchors:
                         if c_end > image_size[1]-1:
                             c_end = image_size[1]-1
 
-                        anchors.append([r_start, c_start, r_end, c_end])
+                        anchors.append([r_start, c_start, r_end, c_end, float(r/stride), float(c/stride), anchor_cnt])
+                        anchor_cnt += 1
 
         return anchors
 
@@ -67,19 +71,69 @@ class Anchors:
 
         return iou
 
+    def bbox_correction(self, rect, anc):
+
+        # Rectangle's center and height and width
+        w = rect[2] - rect[0]
+        h = rect[3] - rect[1]
+        x = rect[0] + w / 2
+        y = rect[1] + h / 2
+
+        # anchors's center and height and width
+        wa = anc[3] - anc[1]
+        ha = anc[2] - anc[0]
+        xa = anc[1] + wa / 2
+        ya = anc[0] + ha / 2
+
+        tx = (x - xa)/wa
+        ty = (y - ya)/ha
+        tw = np.log(w/wa)
+        th = np.log(h/ha)
+
+        return [tx, ty, tw, th]
+
+    def anchor_prespective_rects(self, rect_list):
+        modified_anchors = []
+        for anc in self.anchors:
+            is_rect_in_anchor = False
+            corrected = [0, 0, 0, 0]
+            for rect in rect_list:
+                iou = self.intersection_over_union(rect[1], [anc[1], anc[0], anc[3], anc[2]])
+                if iou >= 0.5:
+                    is_rect_in_anchor = True
+                    corrected = self.bbox_correction(rect[1], anc)
+                    break
+
+            if is_rect_in_anchor == True:
+                modified_anchors.append([1, 0] + corrected)
+            else:
+                modified_anchors.append([0, 1] + corrected)
+
+        return modified_anchors
+
     def rectangle_anchor_match(self, rectangle):
         foreground_anchors = []
         background_anchors = []
+        non_fg_bg_anchors = []
         for anc in self.anchors:
             iou = self.intersection_over_union(rectangle, [anc[1], anc[0], anc[3], anc[2]])
-
-            if iou >= 0.5:
+            anc = self.bbox_correction(rectangle, anc)
+            if iou >= 0.7:
                 foreground_anchors.append(anc)
-            else:
+            elif iou <= 0.3:
                 background_anchors.append(anc)
+            else:
+                non_fg_bg_anchors.append(anc)
 
-        return foreground_anchors, background_anchors
+        return foreground_anchors, background_anchors, non_fg_bg_anchors
 
+def preprocessing_img(img):
+
+    img /= 255.0
+    img -= 0.5
+
+    img = np.expand_dims(img, axis=0)
+    return img
 
 def rpn_generator():
 
@@ -88,52 +142,61 @@ def rpn_generator():
     anchors = Anchors(img_size)
 
     k = 256
-    feature_y = np.round(600/16)
-    feature_x = np.round(800 / 16)
-    rpn_objectness = np.zeros([feature_y, feature_x, 2*k])
+    feature_y = int(np.round(600 / 16))
+    feature_x = int(np.round(800 / 16))
+    rpn_objectness = np.zeros([feature_y, feature_x, 2*k], np.float)
 
     rpn_bbox = np.zeros([feature_y, feature_x, 4*k])
     while True:
         img, rects = shaper.generate_image([600, 800], 15)
 
-        fg_list = []
-        bg_list = []
+        modified_anchors = anchors.anchor_prespective_rects(rects)
+        modified_anchors = np.array(modified_anchors, np.float)
 
-        for rect in rects:
-            fa, ba = anchors.rectangle_anchor_match(rect[1])
-            fg_list.append(fa)
-            fg_list.append(ba)
+        img = preprocessing_img(img)
 
-        fg_list_256 = np.random.choice(fg_list, 256)
-        bg_list_256= np.random.choice(bg_list, 256)
+        objectness = np.expand_dims(modified_anchors[:, 0:2], axis=0)
+        bbox_out = np.expand_dims(modified_anchors[:, 2:], axis=0)
 
-        print('fg_list:', len(fg_list_256))
-        print('bg_list:', len(bg_list_256))
+        # print('objectness.shape: ', objectness.shape)
+        # print('bbox_out.shape: ', bbox_out.shape)
 
-        break
+        yield img, [objectness, bbox_out]
 
-
-
-
-
+        # fg_list = []
+        # bg_list = []
+        # for rect in rects:
+        #     fa, ba, na = anchors.rectangle_anchor_match(rect[1])
+        #     fg_list = fg_list + fa
+        #     bg_list= bg_list + ba
+        #
+        # max_value = 256
+        # """**************Foreground anchors********************"""
+        # if len(fg_list) > max_value:
+        #     fg_list = fg_list[np.random.randint(fg_list.shape[0], size=max_value-2), ::]
+        # fg_list = np.c_[np.ones(len(fg_list)), np.zeros(len(fg_list)), fg_list]
+        #
+        # print('fg_list:', fg_list.shape)
+        #
+        # """**************Background anchors********************"""
+        # bg_list_selected = np.array(bg_list)
+        # bg_list_selected = bg_list_selected[
+        #                    np.random.randint(
+        #                        bg_list_selected.shape[0], size=max_value - len(fg_list)), ::]
+        # bg_list_selected = np.c_[np.zeros(len(bg_list_selected)), bg_list_selected]
+        # print('bg_list:', bg_list_selected.shape)
+        #
+        # """**************Mixed and shuffled anchors********************"""
+        # rpn_list = np.concatenate([fg_list, bg_list_selected], axis=0)
+        # np.random.shuffle(rpn_list)
+        # print('rpn_list:', rpn_list.shape)
+        #
+        # img = preprocessing_img(img)
+        #
+        # yield img, []
+        # break
 
 if __name__ == '__main__':
 
-    rpn_generator()
-    exit(0)
-
-    shapers = ShapeDataset()
-
-    img, shape_rect = shapers.generate_image([600, 800], 10)
-    anchors = Anchors(img.shape)
-    print(anchors.anchors)
-    print('length: ', len(anchors.anchors))
-
-    for rect in shape_rect:
-        fa, ba = anchors.rectangle_anchor_match(rect[1])
-        print(len(fa), len(ba))
-
-        if len(fa) == 0:
-            print('rect:', rect)
-            cv.imwrite('img.png', img)
-        # print(fa)
+    for rpn in rpn_generator():
+        print(rpn[0].shape)
