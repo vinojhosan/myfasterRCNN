@@ -23,13 +23,13 @@ class ShapeDataset(object):
         b = randint(0, 255)
         return [r, g, b]
 
-    def get_restricted_rect(self, rect, img):
+    def get_restricted_rect(self, rect, img_shape):
 
         [x1, y1, x2, y2] = rect
         if x1 < 0: x1 = 0
         if y1 < 0: y1 = 0
-        if x2 >= img.shape[1]: x2 = img.shape[1] - 1
-        if y2 >= img.shape[0]: y2 = img.shape[0] - 1
+        if x2 >= img_shape[1]: x2 = img_shape[1] - 1
+        if y2 >= img_shape[0]: y2 = img_shape[0] - 1
 
         return [x1, y1, x2, y2]
 
@@ -65,7 +65,7 @@ class ShapeDataset(object):
         x2 = xc + radius
         y2 = yc + radius
 
-        rect_restricted = self.get_restricted_rect([x1, y1, x2, y2], img)
+        rect_restricted = self.get_restricted_rect([x1, y1, x2, y2], img.shape)
 
         return img, rect_restricted
 
@@ -94,7 +94,7 @@ class ShapeDataset(object):
         x2 = side_right[0]
         y2 = side_left[1]
 
-        restricted_rect = self.get_restricted_rect([x1, y1, x2, y2], img)
+        restricted_rect = self.get_restricted_rect([x1, y1, x2, y2], img.shape)
 
         return img, restricted_rect
 
@@ -157,7 +157,7 @@ def test():
 
 if __name__ == '__main__':
     dataset = ShapeDataset()
-    img, shape_rect = dataset.generate_image([600, 800], 10)
+    img, shape_rect = dataset.generate_image([400, 400], 10)
     cv.imwrite('generated_image.png', img)
     print(shape_rect)
 
