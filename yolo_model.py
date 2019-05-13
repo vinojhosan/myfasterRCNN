@@ -11,12 +11,13 @@ import keras.backend as kb
 import tensorflow as tf
 import numpy as np
 import cv2 as cv
+import matplotlib.pyplot as plt
 
 import synthetic_dataset as dataset
-IMAGE_SHAPE = [448, 448, 3]
-GRID_SHAPE = [14, 14]
+IMAGE_SHAPE = [224, 224, 3]
+GRID_SHAPE = [7, 7]
 n_class = 3
-anchor_size = [[32, 32], [64, 128], [64, 64], [192, 128], [256, 256]]
+anchor_size = [[32, 32], [64, 64], [128, 192], [192, 128], [128, 128]]
 n_anchors = len(anchor_size)
 
 output_channel = int(n_anchors * (5 + n_class))
@@ -96,21 +97,21 @@ def data_generator(f_batch_size):
 
                         tx = (x_centre - grid_x * grid_ratio) / grid_ratio
                         ty = (y_centre - grid_y * grid_ratio) / grid_ratio
-                        tw = np.log(width/(anc[2] - anc[0]))
-                        th = np.log(height/(anc[3] - anc[1]))
+                        tw = np.log(width/IMAGE_SHAPE[0])
+                        th = np.log(height/IMAGE_SHAPE[1])
 
                         target_batch[itr, grid_y, grid_x, i * anchor_set + 0] = 1  # confidence
                         target_batch[itr, grid_y, grid_x, i * anchor_set + 1] = tx
                         target_batch[itr, grid_y, grid_x, i * anchor_set + 2] = ty
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 3] = 1.0
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 4] = 1.0
+                        target_batch[itr, grid_y, grid_x, i * anchor_set + 3] = tw
+                        target_batch[itr, grid_y, grid_x, i * anchor_set + 4] = th
 
                         target_batch[itr, grid_y, grid_x, i * anchor_set + 5+class_index] = 1.0 # class prob
 
         yield image_batch, target_batch
 
 def tiny_yolo_model():
-    input_image = kl.Input(shape = (448, 448, 3), name='input_image')
+    input_image = kl.Input(shape = (IMAGE_SHAPE[0], IMAGE_SHAPE[1], 3), name='input_image')
 
     x = kl.Conv2D(16, 3, strides=(1, 1), padding='same')(input_image)
     x = kl.LeakyReLU(0.1)(x)
@@ -188,7 +189,7 @@ def yolo_loss_main(n_class = n_class, l_anchors=n_anchors, f_anchor_per_set=anch
         class_loss = kb.sum(objection_true_3_channel * kb.square(class_true - class_pred))
 
         """**************Total loss**************************"""
-        total_loss = lambda_coord * (xy_loss + wh_loss) + conf_loss + class_loss + (lambda_noobj * no_conf_loss)
+        total_loss = lambda_coord * (xy_loss + wh_loss) + conf_loss + class_loss #+ (lambda_noobj * no_conf_loss)
 
         return total_loss
 
@@ -234,11 +235,11 @@ def train():
     yolo_model.summary()
     adam = k.optimizers.Adam(lr=0.001, beta_1=0.9)
 
-    yolo_model.compile(adam, loss=yolo_loss_main(n_class, n_anchors, anchor_set), metrics=['acc', identity_metric])
+    yolo_model.compile(adam, loss=yolo_loss_main(n_class, n_anchors, anchor_set), metrics=['acc', 'mse'])
 
     # Model saving and checkpoint callbacks
-    yolo_model.save('models/empty_model_32x32.hdf5')
-    filepath = "models/weights.best_32x32.hdf5"
+    yolo_model.save('models/empty_model_7x7.hdf5')
+    filepath = "models/weights.best_7x7.hdf5"
     checkpoint = k.callbacks.ModelCheckpoint(filepath, monitor='val_loss', verbose=1, save_best_only=False,
                                                  mode='min')
     tensorboard = k.callbacks.TensorBoard(log_dir="./logs", write_graph=True, write_images=True)
@@ -251,6 +252,56 @@ def train():
                              epochs=100,
                              callbacks=callbacks_list)
 
-    yolo_model.save('models/trained_model_32x32.hdf5')
+    yolo_model.save('models/trained_model_7x7.hdf5')
 
+
+def test():
+    # yolo_model = k.models.load_model("models/weights.best_32x32.hdf5", custom_objects={'yolo_loss':yolo_loss_main(n_class, n_anchors, anchor_set)})
+
+
+    for data in data_generator(1):
+        # out = yolo_model.predict(data[0])
+        break
+
+    image = data[0][0, ::] *255 + 128
+    cv.imwrite('input.png', image)
+    out = np.array(data[1])
+
+    for ch in range(0, out.shape[3]):
+        out_pos = []
+        anc_index = 0
+        if ch%anchor_set == 0:
+            objectness = out[0][:,:, ch]
+
+            obj_pair = np.nonzero(objectness > 0.5)
+            for xy_itr in range(len(obj_pair[0])):
+                tx = out[0][obj_pair[0][xy_itr], obj_pair[1][xy_itr], ch + 1]
+                ty = out[0][obj_pair[0][xy_itr], obj_pair[1][xy_itr], ch + 2]
+                tw = out[0][obj_pair[0][xy_itr], obj_pair[1][xy_itr], ch + 3]
+                th = out[0][obj_pair[0][xy_itr], obj_pair[1][xy_itr], ch + 4]
+
+                x = int(np.round((obj_pair[1][xy_itr]) * grid_ratio + tx*grid_ratio))
+                y = int(np.round((obj_pair[0][xy_itr]) * grid_ratio + ty * grid_ratio))
+
+                # ty = (y_centre - grid_y * grid_ratio) / grid_ratio
+                anc = anchor_size[anc_index]
+
+                w = int(np.round(np.exp(tw) * IMAGE_SHAPE[0]))
+                h = int(np.round(np.exp(th) * IMAGE_SHAPE[1]))
+                # th = np.log(height / (anc[3] - anc[1]))
+
+                anc_index += 1
+                print("x:", x, "y:", y, "w:", w, "h:", h)
+                out_pos.append((x, y, w, h))
+
+        for p in out_pos:
+            print(p)
+            cv.circle(image, (p[0], p[1]), 3, [0, 255, 0], -1)
+            p1 = (int(p[0] - p[2] / 2), int(p[1] - p[3] / 2))
+            p2 = (int(p[0] + p[2] / 2), int(p[1] + p[3] / 2))
+            cv.rectangle(image, p1, p2, [0, 255, 0], 1)
+
+
+    cv.imwrite('out.png', image)
+# test()
 train()
