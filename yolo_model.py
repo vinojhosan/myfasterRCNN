@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import warnings
 warnings.filterwarnings("ignore", message="numpy.dtype size changed")
 warnings.filterwarnings("ignore", message="numpy.ufunc size changed")
@@ -18,7 +18,7 @@ IMAGE_SHAPE = [224, 224, 3]
 GRID_SHAPE = [7, 7]
 n_class = 3
 anchor_size = [[32, 32], [64, 64], [128, 192], [192, 128], [128, 128]]
-n_anchors = len(anchor_size)
+n_anchors = 1#len(anchor_size)
 
 output_channel = int(n_anchors * (5 + n_class))
 anchor_set = 5 + n_class
@@ -86,27 +86,28 @@ def data_generator(f_batch_size):
                 x_centre = c_rect[0] + width / 2
                 y_centre = c_rect[1] + height / 2
 
-                anchor_rects, ious = get_anchors(x_centre, y_centre, c_rect)
+                # anchor_rects, ious = get_anchors(x_centre, y_centre, c_rect)
+                #
+                #
+                # for i, iou in enumerate(ious):
+                #     if iou >= 0.5:
+                # anc = anchor_rects[i]
+                i = 0
+                grid_x = int(x_centre / grid_ratio)
+                grid_y = int(y_centre / grid_ratio)
 
+                tx = (x_centre - grid_x * grid_ratio) / grid_ratio
+                ty = (y_centre - grid_y * grid_ratio) / grid_ratio
+                tw = np.log(width/IMAGE_SHAPE[0])
+                th = np.log(height/IMAGE_SHAPE[1])
 
-                for i, iou in enumerate(ious):
-                    if iou >= 0.5:
-                        anc = anchor_rects[i]
-                        grid_x = int(x_centre / grid_ratio)
-                        grid_y = int(y_centre / grid_ratio)
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 0] = 1  # confidence
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 1] = tx
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 2] = ty
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 3] = tw
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 4] = th
 
-                        tx = (x_centre - grid_x * grid_ratio) / grid_ratio
-                        ty = (y_centre - grid_y * grid_ratio) / grid_ratio
-                        tw = np.log(width/IMAGE_SHAPE[0])
-                        th = np.log(height/IMAGE_SHAPE[1])
-
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 0] = 1  # confidence
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 1] = tx
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 2] = ty
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 3] = tw
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 4] = th
-
-                        target_batch[itr, grid_y, grid_x, i * anchor_set + 5+class_index] = 1.0 # class prob
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 5+class_index] = 1.0 # class prob
 
         yield image_batch, target_batch
 
@@ -141,7 +142,7 @@ def tiny_yolo_model():
     x = kl.LeakyReLU(0.1)(x)
     x = kl.Conv2D(1024, 3, strides=(1, 1), padding='same')(x)
     x = kl.LeakyReLU(0.1)(x)
-    out = kl.Conv2D(output_channel, 1, strides=(1, 1), padding='same', activation='sigmoid')(x)
+    out = kl.Conv2D(output_channel, 1, strides=(1, 1), padding='same', activation='linear')(x)
 
     yolo_model = k.models.Model(input_image, out)
 
@@ -233,7 +234,7 @@ def train():
 
     yolo_model = tiny_yolo_model()
     yolo_model.summary()
-    adam = k.optimizers.Adam(lr=0.001, beta_1=0.9)
+    adam = k.optimizers.Adam(lr=0.0001)
 
     yolo_model.compile(adam, loss=yolo_loss_main(n_class, n_anchors, anchor_set), metrics=['acc', 'mse'])
 
@@ -248,7 +249,7 @@ def train():
     batch_size = 8
 
     yolo_model.fit_generator(data_generator(batch_size),
-                             steps_per_epoch=1000,
+                             steps_per_epoch=int(1000/batch_size),
                              epochs=100,
                              callbacks=callbacks_list)
 
@@ -256,7 +257,7 @@ def train():
 
 
 def test():
-    # yolo_model = k.models.load_model("models/weights.best_32x32.hdf5", custom_objects={'yolo_loss':yolo_loss_main(n_class, n_anchors, anchor_set)})
+    # yolo_model = k.models.load_model("models/weights.best_7x7.hdf5", custom_objects={'yolo_loss':yolo_loss_main(n_class, n_anchors, anchor_set)})
 
 
     for data in data_generator(1):
@@ -284,7 +285,7 @@ def test():
                 y = int(np.round((obj_pair[0][xy_itr]) * grid_ratio + ty * grid_ratio))
 
                 # ty = (y_centre - grid_y * grid_ratio) / grid_ratio
-                anc = anchor_size[anc_index]
+                # anc = anchor_size[anc_index]
 
                 w = int(np.round(np.exp(tw) * IMAGE_SHAPE[0]))
                 h = int(np.round(np.exp(th) * IMAGE_SHAPE[1]))
