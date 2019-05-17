@@ -35,4 +35,10 @@ print("Number of Bounding Boxes:", len(master_df))
 
 master_df.to_csv('full_dataset.csv')
 
-import sklearn.tests
+from sklearn.model_selection import train_test_split
+image_list = master_df.image_name.unique()
+train, test = train_test_split(image_list, test_size=0.30)
+
+train_df = master_df[master_df.image_name.isin(train)]
+test_df = master_df[master_df.image_name.isin(test)]
+
