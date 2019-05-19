@@ -108,15 +108,12 @@ def create_rpn_model():
 
     """ *****************Confidence branch*********************"""
     x = kl.Conv2D(2, (1, 1), padding='valid', activation='linear')(shared)
-    # Reshape to [batch, anchors, 2]
-    rpn_class_logits = kl.Lambda(lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 2]))(x)
+    rpn_class_logits = kl.Reshape([GRID_SHAPE[0] * GRID_SHAPE[1], 2])(x) # Reshape to [batch, anchors, 2]
     rpn_confidence = kl.Activation("softmax", name="rpn_confidence")(rpn_class_logits)
 
     """ *****************BBox branch*********************"""
-    x = kl.Conv2D(4, (1, 1), padding="valid", activation='linear', name='rpn_bbox_pred')(shared)
-    # Reshape to [batch, anchors, 4]
-    rpn_bbox = kl.Lambda(lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4]))(x)
-
+    x = kl.Conv2D(4, (1, 1), padding="valid", activation='linear')(shared)
+    rpn_bbox = kl.Reshape([GRID_SHAPE[0] * GRID_SHAPE[1], 4], name='rpn_bbox_pred')(x) # Reshape to [batch, anchors, 4]
 
     model = k.models.Model(input_image, [rpn_confidence, rpn_bbox])
     model.summary()
