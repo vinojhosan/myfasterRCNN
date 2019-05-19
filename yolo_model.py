@@ -111,6 +111,48 @@ def data_generator(f_batch_size):
 
         yield image_batch, target_batch
 
+def row_data_generator(f_batch_size):
+
+    while True:
+        image_batch = np.zeros([f_batch_size, IMAGE_SHAPE[0], IMAGE_SHAPE[1], 3], np.float32)
+        target_batch = np.zeros([f_batch_size, GRID_SHAPE[0], GRID_SHAPE[1], output_channel], np.float32)
+        target_batch_out = []
+
+        for itr in range(0, f_batch_size):
+
+            img, rects = shapes.generate_image(IMAGE_SHAPE, 5)
+            image_batch[itr, ::] = preprocessing_img(img)
+            for rect in rects:
+                class_index = rect[0]
+                c_rect = rect[1]
+
+                width = c_rect[2] - c_rect[0]
+                height = c_rect[3] - c_rect[1]
+
+                x_centre = c_rect[0] + width / 2
+                y_centre = c_rect[1] + height / 2
+
+                i = 0
+                grid_x = int(x_centre / grid_ratio)
+                grid_y = int(y_centre / grid_ratio)
+
+                tx = (x_centre - grid_x * grid_ratio) / grid_ratio
+                ty = (y_centre - grid_y * grid_ratio) / grid_ratio
+                tw = width / IMAGE_SHAPE[0]
+                th = height / IMAGE_SHAPE[1]
+
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 0] = 1  # confidence
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 1] = tx
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 2] = ty
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 3] = tw
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 4] = th
+
+                target_batch[itr, grid_y, grid_x, i * anchor_set + 5+class_index] = 1.0 # class prob
+            target_batch_out.append(np.reshape(target_batch[itr]))
+
+
+        yield image_batch, np.array(target_batch_out)
+
 def tiny_yolo_model():
     input_image = kl.Input(shape = (IMAGE_SHAPE[0], IMAGE_SHAPE[1], 3), name='input_image')
 
@@ -190,7 +232,7 @@ def yolo_loss_main(n_class = n_class, l_anchors=n_anchors, f_anchor_per_set=anch
         class_loss = kb.sum(objection_true_3_channel * kb.square(class_true - class_pred))
 
         """**************Total loss**************************"""
-        total_loss = lambda_coord * (xy_loss + wh_loss) + conf_loss + class_loss #+ (lambda_noobj * no_conf_loss)
+        total_loss = lambda_coord * (xy_loss + wh_loss) + conf_loss # + class_loss + (lambda_noobj * no_conf_loss)
 
         return total_loss
 
@@ -218,10 +260,12 @@ def my_loss_test():
 # my_loss_test()
 
 
-# for d in data_generator(8):
-#     print(d[1].shape)
-#     cv.imwrite('test_img.png', d[0][0, ::]*255)
-#     break
+for d in row_data_generator(8):
+    print(d[1].shape)
+    cv.imwrite('test_img.png', d[0][0, ::]*255)
+    break
+
+exit(0)
 
 
 def identity_metric(y_true, y_pred):

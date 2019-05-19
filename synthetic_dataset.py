@@ -132,6 +132,14 @@ class ShapeDataset(object):
 
         return img, shape_rect
 
+    @staticmethod
+    def preprocessing_img(img):
+
+        img /= 255.0
+        img -= 0.5
+
+        img = np.expand_dims(img, axis=0)
+        return img
 
 def test():
     dataset = ShapeDataset()
