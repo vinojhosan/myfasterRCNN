@@ -6,6 +6,7 @@ import numpy as np
 import keras as k
 import keras.layers as kl
 import tensorflow as tf
+import cv2 as cv
 
 
 from synthetic_dataset import ShapeDataset
@@ -116,7 +117,7 @@ def create_rpn_model():
     rpn_confidence = kl.Activation("softmax", name="rpn_confidence")(rpn_class_logits)
 
     """ *****************BBox branch*********************"""
-    x = kl.Conv2D(4, (1, 1), padding="valid", activation='linear')(shared)
+    x = kl.Conv2D(4, (1, 1), padding="valid", activation='sigmoid')(shared)
     rpn_bbox = kl.Reshape([GRID_SHAPE[0] * GRID_SHAPE[1], 4], name='rpn_bbox_pred')(x) # Reshape to [batch, anchors, 4]
 
     model = k.models.Model(input_image, [rpn_confidence, rpn_bbox])
@@ -157,6 +158,7 @@ def data_generator(f_batch_size):
                 tw = width/IMAGE_SHAPE[0]
                 th = height/IMAGE_SHAPE[1]
 
+                # print('tx ty tw th:', tx, ty, tw, th)
 
                 target_batch[itr, grid_y, grid_x, 0] = 1  # confidence
                 target_batch[itr, grid_y, grid_x, 1] = 0
@@ -218,5 +220,55 @@ def train():
 
     rpn_model.save('models/trained_model_7x7.hdf5')
 
+def test():
+    rpn_model = k.models.load_model("models/trained_model_7x7.hdf5")
 
+    f_batch_size = 24
+    for data in data_generator(f_batch_size):
+        out = rpn_model.predict(data[0])
+        break
+
+    for itr in range(f_batch_size):
+        image = data[0][itr, ::] *255 + 128
+        cv.imwrite('input.png', image)
+
+        # out = data[1]
+        conf = np.array(out[0][itr])
+        bbox = np.array(out[1][itr])
+
+        out_pos = []
+        for n in range(0, GRID_SHAPE[0]*GRID_SHAPE[1]):
+            if conf[n, 0] > conf[n, 1]:
+                rect = bbox[n]
+                tx = rect[0]
+                ty = rect[1]
+                tw = rect[2]
+                th = rect[3]
+
+                print('tx ty tw th:', tx, ty, tw, th)
+                grid_x = n%GRID_SHAPE[0]
+                grid_y = int(n/GRID_SHAPE[0])
+
+                x_centre = int(np.round((tx + grid_x) * grid_ratio))
+                y_centre = int(np.round((ty + grid_y) * grid_ratio + grid_y))
+                width_by2 = int(np.round(tw * IMAGE_SHAPE[0]/2))
+                height_by2 = int(np.round(th * IMAGE_SHAPE[1]/2))
+
+                x1 = x_centre - width_by2
+                y1 = y_centre - height_by2
+                x2 = x_centre + width_by2
+                y2 = y_centre + height_by2
+
+                [x1, y1, x2, y2] = ShapeDataset.get_restricted_rect([x1, y1, x2, y2], IMAGE_SHAPE)
+
+                out_pos.append([x1, y1, x2, y2])
+
+        for p in out_pos:
+            print(p)
+            p1 = (p[0], p[1])
+            p2 = (p[2], p[3])
+            cv.rectangle(image, p1, p2, [0, 255, 0], 1)
+
+        cv.imwrite(str(itr) + 'out.png', image)
 train()
+# test()

@@ -23,7 +23,8 @@ class ShapeDataset(object):
         b = randint(0, 255)
         return [r, g, b]
 
-    def get_restricted_rect(self, rect, img_shape):
+    @staticmethod
+    def get_restricted_rect(rect, img_shape):
 
         [x1, y1, x2, y2] = rect
         if x1 < 0: x1 = 0
