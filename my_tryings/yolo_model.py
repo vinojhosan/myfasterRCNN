@@ -11,9 +11,9 @@ import keras.backend as kb
 import tensorflow as tf
 import numpy as np
 import cv2 as cv
-import matplotlib.pyplot as plt
 
-import synthetic_dataset as dataset
+from my_tryings import synthetic_dataset as dataset
+
 IMAGE_SHAPE = [224, 224, 3]
 GRID_SHAPE = [7, 7]
 n_class = 3
@@ -24,6 +24,7 @@ output_channel = int(n_anchors * (5 + n_class))
 anchor_set = 5 + n_class
 shapes = dataset.ShapeDataset()
 grid_ratio = IMAGE_SHAPE[0]/GRID_SHAPE[0]
+
 
 def get_anchors(cx, cy, bbox):
     rects = []
@@ -41,6 +42,7 @@ def get_anchors(cx, cy, bbox):
         ious.append(intersection_over_union(rect, bbox))
 
     return rects, ious
+
 
 def intersection_over_union(boxA, boxB):
 
