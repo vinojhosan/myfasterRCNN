@@ -117,7 +117,7 @@ class ShapeDataset(object):
         img = self.create_image(size)
         shape_rect = []
 
-        count = 1 #randint(3, count+1)
+        count = randint(3, count+1)
         for cnt in range(count):
 
             shape_int = randint(0, 3)

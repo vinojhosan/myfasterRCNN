@@ -96,15 +96,15 @@ def rpn_graph(feature_map, anchors_per_location, anchor_stride):
 # print(anchor_boxes)
 
 IMAGE_SHAPE = [224, 224, 3]
-GRID_SHAPE = [16, 16]
+GRID_SHAPE = [7, 7]
 ANCHOR_SIZE = [32, 64, 128]
-ANCHOR_ASPECT_RATIO = [1, 2]
+ANCHOR_ASPECT_RATIO = [0.5, 1, 2]
 STRIDE = [IMAGE_SHAPE[0] // GRID_SHAPE[0],
           IMAGE_SHAPE[1] // GRID_SHAPE[1]]
 
 grid_ratio = IMAGE_SHAPE[0]/GRID_SHAPE[0]
-output_channel = 6
 iou_threshold = 0.5
+
 
 def create_rpn_model():
 
@@ -118,13 +118,13 @@ def create_rpn_model():
                        name='rpn_conv_shared')(feature_map)
 
     """ *****************Confidence branch*********************"""
-    x = kl.Conv2D(1, (1, 1), padding='valid', activation='linear')(shared)
-    # rpn_class_logits = kl.Reshape([GRID_SHAPE[0] * GRID_SHAPE[1], 2])(x) # Reshape to [batch, anchors, 2]
-    rpn_confidence = kl.Activation("softmax", name="rpn_confidence")(x)
+    x = kl.Conv2D(1 * anchors_per_gird, (1, 1), padding='valid')(shared)
+    rpn_class_logits = kl.Reshape([-1, 1])(x) # Reshape to [batch, anchors, 1]
+    rpn_confidence = kl.Activation("sigmoid", name="rpn_confidence")(rpn_class_logits)
 
     """ *****************BBox branch*********************"""
-    rpn_bbox = kl.Conv2D(4, (1, 1), padding="valid", activation='sigmoid')(shared)
-    # rpn_bbox = kl.Reshape([GRID_SHAPE[0] * GRID_SHAPE[1], 4], name='rpn_bbox_pred')(x) # Reshape to [batch, anchors, 4]
+    rpn_bbox = kl.Conv2D(4 * anchors_per_gird, (1, 1), padding="valid")(shared)
+    rpn_bbox = kl.Reshape([-1, 4], name='rpn_bbox_pred')(rpn_bbox) # Reshape to [batch, anchors, 4]
 
     model = k.models.Model(input_image, [rpn_confidence, rpn_bbox])
     model.summary()
@@ -145,7 +145,7 @@ def create_anchors(image_size, grid_size, anchor_size=[32, 64, 128], aspect_rati
                 w_sz = anc * asp
 
                 bbox = [-h_sz * 0.5, -w_sz * 0.5, +h_sz * 0.5, +w_sz * 0.5,
-                        anc_id, anc, asp]  # x1, y1, x2, y2, anc_id
+                        anc_id, anc, asp]  # x1, y1, x2, y2, anc_id, anchor_size, aspect ratio
                 anchor_list.append(bbox)
                 anc_id += 1
 
@@ -172,8 +172,8 @@ def create_anchors(image_size, grid_size, anchor_size=[32, 64, 128], aspect_rati
             current_anchors[:, 4] = r # Gird row position
             current_anchors[:, 5] = c # Gird column position
             current_anchors[:, 6] = ideal_anchors[:, 4] # Anchor ID
-            current_anchors[:, 7] = ideal_anchors[:, 5]  # Anchor ID
-            current_anchors[:, 8] = ideal_anchors[:, 6]  # Anchor ID
+            current_anchors[:, 7] = ideal_anchors[:, 5]  # anchor size
+            current_anchors[:, 8] = ideal_anchors[:, 6]  # aspect ratio
 
             if total_anchors is None:
                 total_anchors = current_anchors
@@ -229,11 +229,11 @@ def batch_iou(box, anchor_list, epsilon=1e-5):
     return iou
 
 
+anchor_list = create_anchors(IMAGE_SHAPE, GRID_SHAPE, ANCHOR_SIZE, ANCHOR_ASPECT_RATIO)
+anchors_per_gird = len(ANCHOR_SIZE)*len(ANCHOR_ASPECT_RATIO)
+
 def data_generator(f_batch_size):
     shapes = ShapeDataset()
-    anchors_per_gird = len(ANCHOR_SIZE)*len(ANCHOR_ASPECT_RATIO)
-    anchor_list = create_anchors(IMAGE_SHAPE, GRID_SHAPE, ANCHOR_SIZE, ANCHOR_ASPECT_RATIO)
-
 
     while True:
         image_batch = np.zeros([f_batch_size, IMAGE_SHAPE[0], IMAGE_SHAPE[1], 3], np.float32)
@@ -243,7 +243,7 @@ def data_generator(f_batch_size):
 
         for itr in range(0, f_batch_size):
 
-            img, rects = shapes.generate_image(IMAGE_SHAPE, 1)
+            img, rects = shapes.generate_image(IMAGE_SHAPE, 5)
             image_batch[itr, ::] = shapes.preprocessing_img(img)
 
             for class_rect in rects:
@@ -252,9 +252,7 @@ def data_generator(f_batch_size):
                 # print('original:', c_rect)
                 iou = batch_iou(c_rect, anchor_list)
 
-                print(len(iou[iou >= iou_threshold]))
-                # print('above:', iou[iou >= 0.1])
-                # print(anchor_list[iou >= 0.1])
+                # print(len(iou[iou >= iou_threshold]))
                 target_confidence[itr, iou >= iou_threshold, 0] = 1
                 # target_confidence[itr, iou >= 0.7, 0] = 1
 
@@ -265,15 +263,24 @@ def data_generator(f_batch_size):
 
                 x_centre = c_rect[0] + width / 2
                 y_centre = c_rect[1] + height / 2
-                grid_x = int(x_centre / STRIDE[1])
-                grid_y = int(y_centre / STRIDE[0])
 
-                tx = (x_centre - grid_x * STRIDE[1]) / STRIDE[1]
-                ty = (y_centre - grid_y * STRIDE[0]) / STRIDE[0]
-                th = height / STRIDE[0]
-                tw = width / STRIDE[1]
+                chosen_anchors = np.where(iou >= iou_threshold)
 
-                target_bbox[itr, iou >= iou_threshold, :] = [tx, ty, tw, th]
+                for itr_anc in chosen_anchors[0]:
+                    anc = anchor_list[itr_anc]
+
+                    anc_h = anc[2] - anc[0]
+                    anc_w = anc[3] - anc[1]
+
+                    anc_cx = anc[1]
+                    anc_cy = anc[0]
+
+                    tx = (x_centre - anc_cx) / anc_w
+                    ty = (y_centre - anc_cy) / anc_h
+                    th = np.log(height/anc_h)
+                    tw = np.log(width/anc_w)
+
+                    target_bbox[itr, itr_anc, :] = [tx, ty, tw, th]
 
         yield image_batch, [target_confidence, target_bbox]
 
@@ -291,10 +298,10 @@ def rpn_loss(y_true, y_pred):
 
     confidence_loss = K.mean(categorical_crossentropy(true_confidence, pred_confidence))
 
+
 def train():
 
-    if not os.path.isdir('./models'):
-        os.mkdir('./models')
+    os.makedirs('./models', exist_ok=True)
 
     rpn_model = create_rpn_model()
     adam = k.optimizers.Adam(lr=0.0001)
@@ -320,7 +327,6 @@ def train():
 
 def test():
     # rpn_model = k.models.load_model("models/trained_model_7x7.hdf5")
-    anchor_list = create_anchors(IMAGE_SHAPE, GRID_SHAPE)
     f_batch_size = 1
     for data in data_generator(f_batch_size):
         # out = rpn_model.predict(data[0])
@@ -345,14 +351,23 @@ def test():
 
                 print('tx ty tw th:', tx, ty, tw, th)
 
-                respective_anchor = anchor_list[n]
-                grid_x = respective_anchor[4] # Grid row
-                grid_y = respective_anchor[5] # Grid col
+                anc = anchor_list[n]
 
-                x_centre = int(np.round((tx + grid_x) * STRIDE[1]))
-                y_centre = int(np.round((ty + grid_y) * STRIDE[0]))
-                width_by2 = int(np.round(tw * STRIDE[1]/2))
-                height_by2 = int(np.round(th * STRIDE[0]/2))
+                anc_h = anc[2] - anc[0]
+                anc_w = anc[3] - anc[1]
+
+                anc_cx = anc[1]
+                anc_cy = anc[0]
+
+                respective_anchor = anchor_list[n]
+
+                x_centre = int(np.round(tx * anc_w + anc_cx))
+                y_centre = int(np.round(ty * anc_h + anc_cy))
+                width = np.exp(tw) * anc_w
+                height = np.exp(th) * anc_h
+
+                width_by2 = int(np.round(width/2))
+                height_by2 = int(np.round(height/2))
 
                 x1 = x_centre - width_by2
                 y1 = y_centre - height_by2
@@ -374,4 +389,5 @@ def test():
 
 if __name__ == '__main__':
     # create_rpn_model()
-    test()
+    # test()
+    train()
