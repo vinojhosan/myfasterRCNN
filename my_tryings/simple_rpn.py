@@ -3,100 +3,16 @@ os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
 os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 import numpy as np
-import keras as k
-import keras.layers as kl
+from tensorflow import keras as k
+from tensorflow.keras import layers as kl
 import tensorflow as tf
 import cv2 as cv
 
 np.random.seed(4)
-from my_tryings.synthetic_dataset import ShapeDataset
-def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
-    """
-    scales: 1D array of anchor sizes in pixels. Example: [32, 64, 128]
-    ratios: 1D array of anchor ratios of width/height. Example: [0.5, 1, 2]
-    shape: [height, width] spatial shape of the feature map over which
-            to generate anchors.
-    feature_stride: Stride of the feature map relative to the image in pixels.
-    anchor_stride: Stride of anchors on the feature map. For example, if the
-        value is 2 then generate anchors for every other feature map pixel.
-    """
-    # Get all combinations of scales and ratios
-    scales, ratios = np.meshgrid(np.array(scales), np.array(ratios))
-    scales = scales.flatten()
-    ratios = ratios.flatten()
-
-    # Enumerate heights and widths from scales and ratios
-    heights = scales / np.sqrt(ratios)
-    widths = scales * np.sqrt(ratios)
-
-    # Enumerate shifts in feature space
-    shifts_y = np.arange(0, shape[0], anchor_stride) * feature_stride
-    shifts_x = np.arange(0, shape[1], anchor_stride) * feature_stride
-    shifts_x, shifts_y = np.meshgrid(shifts_x, shifts_y)
-
-    # Enumerate combinations of shifts, widths, and heights
-    box_widths, box_centers_x = np.meshgrid(widths, shifts_x)
-    box_heights, box_centers_y = np.meshgrid(heights, shifts_y)
-
-    # Reshape to get a list of (y, x) and a list of (h, w)
-    box_centers = np.stack(
-        [box_centers_y, box_centers_x], axis=2).reshape([-1, 2])
-    box_sizes = np.stack([box_heights, box_widths], axis=2).reshape([-1, 2])
-
-    # Convert to corner coordinates (y1, x1, y2, x2)
-    boxes = np.concatenate([box_centers - 0.5 * box_sizes,
-                            box_centers + 0.5 * box_sizes], axis=1)
-    return boxes
-
-
-def rpn_graph(feature_map, anchors_per_location, anchor_stride):
-    """Builds the computation graph of Region Proposal Network.
-
-    feature_map: backbone features [batch, height, width, depth]
-    anchors_per_location: number of anchors per pixel in the feature map
-    anchor_stride: Controls the density of anchors. Typically 1 (anchors for
-                   every pixel in the feature map), or 2 (every other pixel).
-
-    Returns:
-        rpn_class_logits: [batch, H * W * anchors_per_location, 2] Anchor classifier logits (before softmax)
-        rpn_probs: [batch, H * W * anchors_per_location, 2] Anchor classifier probabilities.
-        rpn_bbox: [batch, H * W * anchors_per_location, (dy, dx, log(dh), log(dw))] Deltas to be
-                  applied to anchors.
-    """
-    # TODO: check if stride of 2 causes alignment issues if the feature map
-    # is not even.
-    # Shared convolutional base of the RPN
-    shared = KL.Conv2D(512, (3, 3), padding='same', activation='relu',
-                       strides=anchor_stride,
-                       name='rpn_conv_shared')(feature_map)
-
-    # Anchor Score. [batch, height, width, anchors per location * 2].
-    x = KL.Conv2D(2 * anchors_per_location, (1, 1), padding='valid',
-                  activation='linear', name='rpn_class_raw')(shared)
-
-    # Reshape to [batch, anchors, 2]
-    rpn_class_logits = KL.Lambda(
-        lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 2]))(x)
-
-    # Softmax on last dimension of BG/FG.
-    rpn_probs = KL.Activation(
-        "softmax", name="rpn_class_xxx")(rpn_class_logits)
-
-    # Bounding box refinement. [batch, H, W, anchors per location * depth]
-    # where depth is [x, y, log(w), log(h)]
-    x = KL.Conv2D(anchors_per_location * 4, (1, 1), padding="valid",
-                  activation='linear', name='rpn_bbox_pred')(shared)
-
-    # Reshape to [batch, anchors, 4]
-    rpn_bbox = KL.Lambda(lambda t: tf.reshape(t, [tf.shape(t)[0], -1, 4]))(x)
-
-    return [rpn_class_logits, rpn_probs, rpn_bbox]
-
-# anchor_boxes = generate_anchors([32, 64, 128], [0.5, 1, 2], [20, 20], 1, 1)
-# print(anchor_boxes)
+from synthetic_dataset import ShapeDataset
 
 IMAGE_SHAPE = [224, 224, 3]
-GRID_SHAPE = [7, 7]
+GRID_SHAPE = [28, 28]
 ANCHOR_SIZE = [32, 64, 128]
 ANCHOR_ASPECT_RATIO = [0.5, 1, 2]
 STRIDE = [IMAGE_SHAPE[0] // GRID_SHAPE[0],
@@ -104,6 +20,58 @@ STRIDE = [IMAGE_SHAPE[0] // GRID_SHAPE[0],
 
 grid_ratio = IMAGE_SHAPE[0]/GRID_SHAPE[0]
 iou_threshold = 0.5
+feature_size = 256
+
+
+def classification_model():
+
+    model_input = kl.Input(shape=[GRID_SHAPE[0], GRID_SHAPE[1], feature_size])
+
+    x = model_input
+    for i in range(4):
+        x = kl.Conv2D(feature_size, 3,
+                          padding='same',
+                          kernel_initializer='he_normal')(x)
+        x = kl.BatchNormalization()(x)
+        x = kl.Activation('relu')(x)
+
+    x = kl.Conv2D(1 * len(ANCHOR_ASPECT_RATIO), (1, 1), padding='valid')(x)
+    rpn_class_logits = kl.Reshape([-1, 1])(x)  # Reshape to [batch, anchors, 1]
+    rpn_confidence = kl.Activation("sigmoid")(rpn_class_logits)
+
+    cls_model = k.models.Model(model_input, rpn_confidence, name='cls_model')
+    return cls_model
+
+
+def bbox_model():
+
+    model_input = kl.Input(shape=[GRID_SHAPE[0], GRID_SHAPE[1], feature_size])
+
+    x = model_input
+    for i in range(4):
+        x = kl.Conv2D(feature_size, 3,
+                          padding='same',
+                          kernel_initializer='he_normal')(x)
+        x = kl.BatchNormalization()(x)
+        x = kl.Activation('relu')(x)
+
+    rpn_bbox = kl.Conv2D(4 * len(ANCHOR_ASPECT_RATIO), (1, 1), padding="valid")(x)
+    rpn_bbox = kl.Reshape([-1, 4], name='rpn_bbox_pred')(rpn_bbox)
+
+    bbox_model = k.models.Model(model_input, rpn_bbox, name='bbox_model')
+    return bbox_model
+
+
+def simple_conv_upsample(feature, x):
+    feature = k.layers.UpSampling2D()(feature)
+    x = k.layers.Concatenate()([feature, x])
+    x = kl.Conv2D(feature_size, 3,
+                  padding='same',
+                  kernel_initializer='he_normal')(x)
+    x = kl.BatchNormalization()(x)
+    x = kl.Activation('relu')(x)
+
+    return x
 
 
 def create_rpn_model():
@@ -126,7 +94,49 @@ def create_rpn_model():
     rpn_bbox = kl.Conv2D(4 * anchors_per_gird, (1, 1), padding="valid")(shared)
     rpn_bbox = kl.Reshape([-1, 4], name='rpn_bbox_pred')(rpn_bbox) # Reshape to [batch, anchors, 4]
 
+    # outputs = kl.Concatenate()([rpn_confidence, rpn_bbox])
     model = k.models.Model(input_image, [rpn_confidence, rpn_bbox])
+    model.summary()
+
+    return model
+
+
+def create_fpn_model():
+
+    input_image = kl.Input(shape=IMAGE_SHAPE)
+
+    resnet50 = k.applications.ResNet50(include_top=False,
+                                        weights='imagenet',
+                                       input_tensor=input_image,
+                                       input_shape=IMAGE_SHAPE)
+
+    pyramidal_layer1 = resnet50.get_layer('activation_48').output # 7 x 7
+    pyramidal_layer2 = resnet50.get_layer('activation_39').output  # 14 x 14
+    pyramidal_layer3 = resnet50.get_layer('activation_21').output  # 28 x 28
+
+    feature0 = kl.Conv2D(feature_size, 3,padding='same')(pyramidal_layer1)
+    feature1 = simple_conv_upsample(pyramidal_layer1, pyramidal_layer2)
+    feature2 = simple_conv_upsample(pyramidal_layer2, pyramidal_layer3)
+
+    cls_model = classification_model()
+    box_model = bbox_model()
+
+    feature0 = k.layers.UpSampling2D((4,4))(feature0)
+    feature1 = k.layers.UpSampling2D((2, 2))(feature1)
+    feature2 = feature2
+
+    cls0 = cls_model(feature0)
+    cls1 = cls_model(feature1)
+    cls2 = cls_model(feature2)
+
+    box0 = box_model(feature0)
+    box1 = box_model(feature1)
+    box2 = box_model(feature2)
+
+    rpn_confidence = k.layers.Concatenate(axis=1)([cls0, cls1, cls2])
+    rpn_bbox = k.layers.Concatenate(axis=1)([box0, box1, box2])
+
+    model = k.models.Model(input_image, (rpn_confidence, rpn_bbox))
     model.summary()
 
     return model
@@ -232,6 +242,7 @@ def batch_iou(box, anchor_list, epsilon=1e-5):
 anchor_list = create_anchors(IMAGE_SHAPE, GRID_SHAPE, ANCHOR_SIZE, ANCHOR_ASPECT_RATIO)
 anchors_per_gird = len(ANCHOR_SIZE)*len(ANCHOR_ASPECT_RATIO)
 
+
 def data_generator(f_batch_size):
     shapes = ShapeDataset()
 
@@ -282,31 +293,43 @@ def data_generator(f_batch_size):
 
                     target_bbox[itr, itr_anc, :] = [tx, ty, tw, th]
 
+        target_out = np.concatenate([target_confidence, target_bbox], axis=-1)
+
         yield image_batch, [target_confidence, target_bbox]
 
 
 def rpn_loss(y_true, y_pred):
+    # target_confidence = y_true[:,:,0:1]
+    # target_bbox = y_true[:,:,1:]
+    #
+    # pred_confidence = y_pred[:, :, 0:1]
+    # pred_bbox = y_pred[:, :, 1:]
 
-    """Allocation of channels"""
-    true_mask = kl.Lambda(lambda x: x[:, :, :, 0:1])(y_true)
+    target_confidence, target_bbox = y_true[0], y_true[1]
+    pred_confidence, pred_bbox = y_pred[0], y_pred[0]
 
-    true_confidence = kl.Lambda(lambda x: x[:, :, :, 0:2])(y_true)
-    bbox_true = kl.Lambda(lambda x: x[:, :, :, 2:6])(y_true)
+    confidence_loss = tf.reduce_sum(k.losses.binary_crossentropy(target_confidence, pred_confidence))
 
-    pred_confidence = kl.Lambda(lambda x: x[:, :, :, 0:2])(y_pred)
-    bbox_pred = kl.Lambda(lambda x: x[:, :, :, 2:6])(y_pred)
+    masked_target_conf = kl.Concatenate(name='masked_target_conf')([target_confidence,
+                                    target_confidence,
+                                    target_confidence,
+                                    target_confidence])
+    pred_bbox = tf.multiply(pred_bbox, target_confidence, name='pred_bbox_multiply')
 
-    confidence_loss = K.mean(categorical_crossentropy(true_confidence, pred_confidence))
+    bbox_loss = tf.reduce_sum(k.losses.mean_squared_error(target_bbox, pred_bbox))
+
+    return 4 * confidence_loss + 1 * bbox_loss
+
 
 
 def train():
 
     os.makedirs('./models', exist_ok=True)
 
-    rpn_model = create_rpn_model()
-    adam = k.optimizers.Adam(lr=0.0001)
+    rpn_model = create_fpn_model()
+    adam = k.optimizers.Adam(lr=0.001)
 
-    rpn_model.compile(adam, loss=[k.losses.binary_crossentropy, k.losses.mean_squared_error], metrics=['acc', 'mse'])
+    rpn_model.compile(adam, loss=rpn_loss) # , metrics=['mse']
 
     # Model saving and checkpoint callbacks
     rpn_model.save('models/empty_model_7x7.hdf5')
@@ -326,10 +349,10 @@ def train():
     rpn_model.save('models/trained_model_7x7.hdf5')
 
 def test():
-    # rpn_model = k.models.load_model("models/trained_model_7x7.hdf5")
-    f_batch_size = 1
+    rpn_model = k.models.load_model("models/trained_model_7x7.hdf5")
+    f_batch_size = 32
     for data in data_generator(f_batch_size):
-        # out = rpn_model.predict(data[0])
+        out = rpn_model.predict(data[0])
         break
 
     for itr in range(f_batch_size):
@@ -389,5 +412,6 @@ def test():
 
 if __name__ == '__main__':
     # create_rpn_model()
+    # create_fpn_model()
     # test()
     train()
