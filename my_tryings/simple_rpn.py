@@ -121,7 +121,7 @@ def create_fpn_model():
     cls_model = classification_model()
     box_model = bbox_model()
 
-    feature0 = k.layers.UpSampling2D((4,4))(feature0)
+    feature0 = k.layers.UpSampling2D((4, 4))(feature0)
     feature1 = k.layers.UpSampling2D((2, 2))(feature1)
     feature2 = feature2
 
@@ -136,7 +136,9 @@ def create_fpn_model():
     rpn_confidence = k.layers.Concatenate(axis=1)([cls0, cls1, cls2])
     rpn_bbox = k.layers.Concatenate(axis=1)([box0, box1, box2])
 
-    model = k.models.Model(input_image, (rpn_confidence, rpn_bbox))
+    output = k.layers.Concatenate()([rpn_confidence, rpn_bbox])
+
+    model = k.models.Model(input_image, output)
     model.summary()
 
     return model
@@ -295,18 +297,18 @@ def data_generator(f_batch_size):
 
         target_out = np.concatenate([target_confidence, target_bbox], axis=-1)
 
-        yield image_batch, [target_confidence, target_bbox]
+        yield image_batch, target_out
 
 
 def rpn_loss(y_true, y_pred):
-    # target_confidence = y_true[:,:,0:1]
-    # target_bbox = y_true[:,:,1:]
-    #
-    # pred_confidence = y_pred[:, :, 0:1]
-    # pred_bbox = y_pred[:, :, 1:]
+    target_confidence = y_true[:,:,0:1]
+    target_bbox = y_true[:,:,1:]
 
-    target_confidence, target_bbox = y_true[0], y_true[1]
-    pred_confidence, pred_bbox = y_pred[0], y_pred[0]
+    pred_confidence = y_pred[:, :, 0:1]
+    pred_bbox = y_pred[:, :, 1:]
+
+    # target_confidence, target_bbox = y_true[0], y_true[1]
+    # pred_confidence, pred_bbox = y_pred[0], y_pred[0]
 
     confidence_loss = tf.reduce_sum(k.losses.binary_crossentropy(target_confidence, pred_confidence))
 
