@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
+os.environ["CUDA_VISIBLE_DEVICES"]="8"
 
 import numpy as np
 from tensorflow import keras as k
@@ -10,6 +10,7 @@ import cv2 as cv
 
 np.random.seed(4)
 from synthetic_dataset import ShapeDataset
+import losses
 
 IMAGE_SHAPE = [224, 224, 3]
 GRID_SHAPE = [28, 28]
@@ -21,9 +22,9 @@ STRIDE = [IMAGE_SHAPE[0] // GRID_SHAPE[0],
 grid_ratio = IMAGE_SHAPE[0]/GRID_SHAPE[0]
 iou_threshold = 0.5
 feature_size = 256
+num_class = ShapeDataset.n_shapes
 
-
-def classification_model():
+def classification_model(num_classes):
 
     model_input = kl.Input(shape=[GRID_SHAPE[0], GRID_SHAPE[1], feature_size])
 
@@ -35,7 +36,7 @@ def classification_model():
         x = kl.BatchNormalization()(x)
         x = kl.Activation('relu')(x)
 
-    x = kl.Conv2D(1 * len(ANCHOR_ASPECT_RATIO), (1, 1), padding='valid')(x)
+    x = kl.Conv2D(num_classes * len(ANCHOR_ASPECT_RATIO), (1, 1), padding='valid')(x)
     rpn_class_logits = kl.Reshape([-1, 1])(x)  # Reshape to [batch, anchors, 1]
     rpn_confidence = kl.Activation("sigmoid")(rpn_class_logits)
 
@@ -118,27 +119,22 @@ def create_fpn_model():
     feature1 = simple_conv_upsample(pyramidal_layer1, pyramidal_layer2)
     feature2 = simple_conv_upsample(pyramidal_layer2, pyramidal_layer3)
 
-    cls_model = classification_model()
+    cls_model = classification_model(num_class)
     box_model = bbox_model()
 
     feature0 = k.layers.UpSampling2D((4, 4))(feature0)
     feature1 = k.layers.UpSampling2D((2, 2))(feature1)
     feature2 = feature2
 
-    cls0 = cls_model(feature0)
-    cls1 = cls_model(feature1)
-    cls2 = cls_model(feature2)
+    features = [feature0, feature1, feature2]
 
-    box0 = box_model(feature0)
-    box1 = box_model(feature1)
-    box2 = box_model(feature2)
+    # Applying to class and box models
+    rpn_confidence = k.layers.Concatenate(axis=1, name='class')([cls_model(f) for f in features])
+    rpn_bbox = k.layers.Concatenate(axis=1, name='bbox')([box_model(f) for f in features])
 
-    rpn_confidence = k.layers.Concatenate(axis=1)([cls0, cls1, cls2])
-    rpn_bbox = k.layers.Concatenate(axis=1)([box0, box1, box2])
+    # output = k.layers.Concatenate()([rpn_confidence, rpn_bbox])
 
-    output = k.layers.Concatenate()([rpn_confidence, rpn_bbox])
-
-    model = k.models.Model(input_image, output)
+    model = k.models.Model(input_image, (rpn_confidence, rpn_bbox))
     model.summary()
 
     return model
@@ -251,12 +247,12 @@ def data_generator(f_batch_size):
     while True:
         image_batch = np.zeros([f_batch_size, IMAGE_SHAPE[0], IMAGE_SHAPE[1], 3], np.float32)
 
-        target_confidence = np.zeros([f_batch_size, GRID_SHAPE[0] * GRID_SHAPE[1] * anchors_per_gird, 1], np.float32)
+        target_confidence = np.zeros([f_batch_size, GRID_SHAPE[0] * GRID_SHAPE[1] * anchors_per_gird, num_class], np.float32)
         target_bbox = np.zeros([f_batch_size, GRID_SHAPE[0] * GRID_SHAPE[1] * anchors_per_gird, 4], np.float32)
 
         for itr in range(0, f_batch_size):
 
-            img, rects = shapes.generate_image(IMAGE_SHAPE, 5)
+            img, rects = shapes.generate_image(IMAGE_SHAPE, 3)
             image_batch[itr, ::] = shapes.preprocessing_img(img)
 
             for class_rect in rects:
@@ -266,7 +262,7 @@ def data_generator(f_batch_size):
                 iou = batch_iou(c_rect, anchor_list)
 
                 # print(len(iou[iou >= iou_threshold]))
-                target_confidence[itr, iou >= iou_threshold, 0] = 1
+                target_confidence[itr, iou >= iou_threshold, class_index] = 1
                 # target_confidence[itr, iou >= 0.7, 0] = 1
 
                 target_bbox[itr, iou >= iou_threshold, :] = anchor_list[iou >= iou_threshold, 0:4]
@@ -295,9 +291,9 @@ def data_generator(f_batch_size):
 
                     target_bbox[itr, itr_anc, :] = [tx, ty, tw, th]
 
-        target_out = np.concatenate([target_confidence, target_bbox], axis=-1)
+        # target_out = np.concatenate([target_confidence, target_bbox], axis=-1)
 
-        yield image_batch, target_out
+        yield image_batch, [target_confidence, target_bbox]
 
 
 def rpn_loss(y_true, y_pred):
@@ -318,7 +314,7 @@ def rpn_loss(y_true, y_pred):
                                     target_confidence])
     pred_bbox = tf.multiply(pred_bbox, target_confidence, name='pred_bbox_multiply')
 
-    bbox_loss = tf.reduce_sum(k.losses.mean_squared_error(target_bbox, pred_bbox))
+    bbox_loss = tf.reduce_mean(k.losses.mean_absolute_error(target_bbox, pred_bbox))
 
     return 4 * confidence_loss + 1 * bbox_loss
 
@@ -331,7 +327,7 @@ def train():
     rpn_model = create_fpn_model()
     adam = k.optimizers.Adam(lr=0.001)
 
-    rpn_model.compile(adam, loss=rpn_loss) # , metrics=['mse']
+    rpn_model.compile(adam, loss=[losses.focal_loss, losses.huber_loss]) # , metrics=['mse']
 
     # Model saving and checkpoint callbacks
     rpn_model.save('models/empty_model_7x7.hdf5')
@@ -351,19 +347,21 @@ def train():
     rpn_model.save('models/trained_model_7x7.hdf5')
 
 def test():
-    rpn_model = k.models.load_model("models/trained_model_7x7.hdf5")
+    # rpn_model = create_fpn_model()
+    # rpn_model.load_weights("models/trained_model_7x7.hdf5")
+
     f_batch_size = 32
     for data in data_generator(f_batch_size):
-        out = rpn_model.predict(data[0])
+        # out = rpn_model.predict(data[0])
         break
 
     for itr in range(f_batch_size):
         image = data[0][itr, ::] *255 + 128
-        cv.imwrite('input.png', image)
+        # cv.imwrite('input.png', image)
 
         out = data[1]
-        conf = np.array(out[0][itr])
-        bbox = np.array(out[1][itr])
+        conf = np.array(out[itr,:, 0:1])
+        bbox = np.array(out[itr,:, 1:])
 
         out_pos = []
         for n in range(0, conf.shape[0]):

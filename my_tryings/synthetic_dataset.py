@@ -13,6 +13,7 @@ def randint(a, b):
 
 
 class ShapeDataset(object):
+    n_shapes = 3
 
     def __init__(self):
         self.min_value = 50
@@ -120,7 +121,7 @@ class ShapeDataset(object):
         count = randint(3, count+1)
         for cnt in range(count):
 
-            shape_int = randint(0, 3)
+            shape_int = randint(0, self.n_shapes)
 
             if shape_int == 0:
                 img, rect = self.draw_rectangle(img)
