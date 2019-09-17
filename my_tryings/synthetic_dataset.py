@@ -78,11 +78,11 @@ class ShapeDataset(object):
         pt3 = self.get_random_point(img)
 
         try:
-            height = randint(self.min_value, pt[1])
+            height = randint(self.min_value*1.5, pt[1])
         except:
-            height = randint(pt[1], self.min_value)
+            height = randint(pt[1], self.min_value*1.5)
 
-        base_by_2 = int(randint(self.min_value, pt[0])/2)
+        base_by_2 = int(randint(self.min_value*1.5, pt[0])/2)
 
         top = [pt[0], pt[1] - height]
         side_left = [pt[0] - base_by_2, pt[1]]
@@ -118,7 +118,7 @@ class ShapeDataset(object):
         img = self.create_image(size)
         shape_rect = []
 
-        count = randint(3, count+1)
+        count = randint(1, count+1)
         for cnt in range(count):
 
             shape_int = randint(0, self.n_shapes)

@@ -1,6 +1,6 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-os.environ["CUDA_VISIBLE_DEVICES"]="8"
+os.environ["CUDA_VISIBLE_DEVICES"]="2"
 
 import numpy as np
 from tensorflow import keras as k
@@ -13,7 +13,7 @@ from synthetic_dataset import ShapeDataset
 import losses
 
 IMAGE_SHAPE = [224, 224, 3]
-GRID_SHAPE = [28, 28]
+GRID_SHAPE = [7, 7]
 ANCHOR_SIZE = [32, 64, 128]
 ANCHOR_ASPECT_RATIO = [0.5, 1, 2]
 STRIDE = [IMAGE_SHAPE[0] // GRID_SHAPE[0],
@@ -23,6 +23,7 @@ grid_ratio = IMAGE_SHAPE[0]/GRID_SHAPE[0]
 iou_threshold = 0.5
 feature_size = 256
 num_class = ShapeDataset.n_shapes
+
 
 def classification_model(num_classes):
 
@@ -37,7 +38,7 @@ def classification_model(num_classes):
         x = kl.Activation('relu')(x)
 
     x = kl.Conv2D(num_classes * len(ANCHOR_ASPECT_RATIO), (1, 1), padding='valid')(x)
-    rpn_class_logits = kl.Reshape([-1, 1])(x)  # Reshape to [batch, anchors, 1]
+    rpn_class_logits = kl.Reshape([-1, num_class])(x)  # Reshape to [batch, anchors, 1]
     rpn_confidence = kl.Activation("sigmoid")(rpn_class_logits)
 
     cls_model = k.models.Model(model_input, rpn_confidence, name='cls_model')
@@ -66,6 +67,17 @@ def bbox_model():
 def simple_conv_upsample(feature, x):
     feature = k.layers.UpSampling2D()(feature)
     x = k.layers.Concatenate()([feature, x])
+    x = kl.Conv2D(feature_size, 3,
+                  padding='same',
+                  kernel_initializer='he_normal')(x)
+    x = kl.BatchNormalization()(x)
+    x = kl.Activation('relu')(x)
+
+    return x
+
+
+def simple_conv_downsample(feature):
+    x = k.layers.MaxPool2D()(feature)
     x = kl.Conv2D(feature_size, 3,
                   padding='same',
                   kernel_initializer='he_normal')(x)
@@ -116,17 +128,14 @@ def create_fpn_model():
     pyramidal_layer3 = resnet50.get_layer('activation_21').output  # 28 x 28
 
     feature0 = kl.Conv2D(feature_size, 3,padding='same')(pyramidal_layer1)
-    feature1 = simple_conv_upsample(pyramidal_layer1, pyramidal_layer2)
-    feature2 = simple_conv_upsample(pyramidal_layer2, pyramidal_layer3)
+    feature1 = simple_conv_downsample(pyramidal_layer2)
+    feature2 = simple_conv_downsample(pyramidal_layer3)
+    feature2 = simple_conv_downsample(feature2)
 
     cls_model = classification_model(num_class)
     box_model = bbox_model()
 
-    feature0 = k.layers.UpSampling2D((4, 4))(feature0)
-    feature1 = k.layers.UpSampling2D((2, 2))(feature1)
-    feature2 = feature2
-
-    features = [feature0, feature1, feature2]
+    features = [feature2, feature1, feature0]
 
     # Applying to class and box models
     rpn_confidence = k.layers.Concatenate(axis=1, name='class')([cls_model(f) for f in features])
@@ -167,7 +176,7 @@ def create_anchors(image_size, grid_size, anchor_size=[32, 64, 128], aspect_rati
     ideal_anchors = get_anchors()
     total_anchors = None
     for r in range(0, grid_size[0]):
-        for c in range(0, grid_size[0]):
+        for c in range(0, grid_size[1]):
 
             r_centre = (r + 0.5) * h_stride
             c_centre = (c + 0.5) * w_stride
@@ -188,8 +197,24 @@ def create_anchors(image_size, grid_size, anchor_size=[32, 64, 128], aspect_rati
             else:
                 total_anchors = np.vstack((total_anchors, current_anchors))
 
+    # Segregate with respect to anchor size
+    total_anchors_dict = {}
+    for itr_anc in total_anchors:
+        anc_sz = itr_anc[7]
+        if anc_sz not in total_anchors_dict:
+            total_anchors_dict[anc_sz] = itr_anc
+        else:
+            total_anchors_dict[anc_sz] = np.vstack((total_anchors_dict[anc_sz], itr_anc))
+
+    final_anchors = None
+    for k in anchor_size:
+        current_anchors = total_anchors_dict[k]
+        if final_anchors is None:
+            final_anchors = current_anchors
+        else:
+            final_anchors = np.vstack((final_anchors, current_anchors))
     # corrected_list = remove_boundary_outliers(total_anchors)
-    return np.array(total_anchors)
+    return np.array(final_anchors)
 
 
 def batch_iou(box, anchor_list, epsilon=1e-5):
@@ -319,7 +344,6 @@ def rpn_loss(y_true, y_pred):
     return 4 * confidence_loss + 1 * bbox_loss
 
 
-
 def train():
 
     os.makedirs('./models', exist_ok=True)
@@ -327,7 +351,7 @@ def train():
     rpn_model = create_fpn_model()
     adam = k.optimizers.Adam(lr=0.001)
 
-    rpn_model.compile(adam, loss=[losses.focal_loss, losses.huber_loss]) # , metrics=['mse']
+    rpn_model.compile(adam, loss=[k.losses.binary_crossentropy, k.losses.mean_squared_error]) # , metrics=['mse']
 
     # Model saving and checkpoint callbacks
     rpn_model.save('models/empty_model_7x7.hdf5')
@@ -360,12 +384,13 @@ def test():
         # cv.imwrite('input.png', image)
 
         out = data[1]
-        conf = np.array(out[itr,:, 0:1])
-        bbox = np.array(out[itr,:, 1:])
+        conf = np.array(out[0][itr,::])
+        bbox = np.array(out[1][itr,::])
 
         out_pos = []
         for n in range(0, conf.shape[0]):
-            if conf[n, 0] > iou_threshold:
+            max_class = np.max(conf[n, :])
+            if  max_class > iou_threshold:
                 rect = bbox[n]
                 tx = rect[0]
                 ty = rect[1]
@@ -413,5 +438,5 @@ def test():
 if __name__ == '__main__':
     # create_rpn_model()
     # create_fpn_model()
-    # test()
-    train()
+    test()
+    # train()
