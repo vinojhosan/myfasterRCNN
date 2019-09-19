@@ -77,12 +77,9 @@ class ShapeDataset(object):
         pt2 = self.get_random_point(img)
         pt3 = self.get_random_point(img)
 
-        try:
-            height = randint(self.min_value*1.5, pt[1])
-        except:
-            height = randint(pt[1], self.min_value*1.5)
-
-        base_by_2 = int(randint(self.min_value*1.5, pt[0])/2)
+        triangle_min = int(self.min_value * 1.5)
+        height = randint(min(triangle_min, pt[1]), max(triangle_min, pt[1]))
+        base_by_2 = height // 2 #int(randint(min(triangle_min, pt[0] // 2), max(triangle_min, pt[0]) // 2))
 
         top = [pt[0], pt[1] - height]
         side_left = [pt[0] - base_by_2, pt[1]]

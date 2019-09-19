@@ -364,33 +364,35 @@ def train():
     batch_size = 8
 
     rpn_model.fit_generator(data_generator(batch_size),
-                             steps_per_epoch=int(1000/batch_size),
+                             steps_per_epoch=int(10000/batch_size),
                              epochs=100,
                              callbacks=callbacks_list)
 
     rpn_model.save('models/trained_model_7x7.hdf5')
 
 def test():
-    # rpn_model = create_fpn_model()
-    # rpn_model.load_weights("models/trained_model_7x7.hdf5")
+    rpn_model = create_fpn_model()
+    rpn_model.load_weights("models/trained_model_7x7.hdf5")
 
-    f_batch_size = 32
+    os.makedirs('./output', exist_ok=True)
+
+    f_batch_size = 320
     for data in data_generator(f_batch_size):
-        # out = rpn_model.predict(data[0])
+        out = rpn_model.predict(data[0])
         break
 
     for itr in range(f_batch_size):
         image = data[0][itr, ::] *255 + 128
         # cv.imwrite('input.png', image)
 
-        out = data[1]
+        # out = data[1]
         conf = np.array(out[0][itr,::])
         bbox = np.array(out[1][itr,::])
 
         out_pos = []
         for n in range(0, conf.shape[0]):
             max_class = np.max(conf[n, :])
-            if  max_class > iou_threshold:
+            if  max_class > 0.05:# iou_threshold:
                 rect = bbox[n]
                 tx = rect[0]
                 ty = rect[1]
@@ -432,7 +434,7 @@ def test():
             p2 = (p[2], p[3])
             cv.rectangle(image, p1, p2, [0, 255, 0], 1)
 
-        cv.imwrite(str(itr) + 'out.png', image)
+        cv.imwrite('./output/out_' + str(itr).zfill(3) + '.png', image)
 
 
 if __name__ == '__main__':
